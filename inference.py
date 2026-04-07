@@ -5,14 +5,13 @@ from openai import OpenAI
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME = os.environ["MODEL_NAME"]
-HF_TOKEN = os.environ["HF_TOKEN"]
+API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
+    api_key=API_KEY,
 )
-
 TASKS = ["easy", "medium", "hard"]
 
 

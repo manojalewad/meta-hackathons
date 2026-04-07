@@ -1,44 +1,80 @@
 import json
 import os
+from typing import List, Optional
+
 import requests
 from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
-client = None
+BENCHMARK = "startup-business-simulator"
+TASKS = ["easy", "medium", "hard"]
+MAX_STEPS = 30
+SUCCESS_SCORE_THRESHOLD = 0.1
 
-if API_KEY:
+client = None
+if HF_TOKEN:
     try:
         client = OpenAI(
             base_url=API_BASE_URL,
-            api_key=API_KEY,
+            api_key=HF_TOKEN,
         )
-    except Exception as e:
-        print(f"[ERROR] Failed to initialize OpenAI client: {e}")
+    except Exception as exc:
+        print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
         client = None
-else:
-    print("[ERROR] No API key found. Falling back to rule-based actions.")
-
-TASKS = ["easy", "medium", "hard"]
 
 
-def choose_action(observation):
-    available_actions = observation.get("available_actions", ["runAds"])
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
-    # If no client available, use simple fallback strategy
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+def fallback_action(available_actions: List[str]) -> str:
+    preferred = [
+        "hireEngineer",
+        "runAds",
+        "improveProduct",
+        "hireMarketing",
+        "launchFeature",
+    ]
+
+    for action in preferred:
+        if action in available_actions:
+            return action
+
+    return available_actions[0] if available_actions else "noWork"
+
+
+def choose_action(observation: dict) -> str:
+    available_actions = observation.get("available_actions", [])
+
+    if not available_actions:
+        return "noWork"
+
     if client is None:
-        if "hireEngineer" in available_actions:
-            return "hireEngineer"
-        if "runAds" in available_actions:
-            return "runAds"
-        return available_actions[0]
+        return fallback_action(available_actions)
 
-    try:
-        prompt = f"""
-You are managing a startup business.
+    prompt = f"""
+You are managing a startup company.
 
 Current observation:
 {json.dumps(observation, indent=2)}
@@ -49,88 +85,116 @@ Choose exactly one action from this list:
 Return only the action name and nothing else.
 """
 
-        response = client.chat.completions.create(
+    try:
+        completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert startup business strategist."
+                    "content": "You are an expert startup business manager.",
                 },
                 {
                     "role": "user",
-                    "content": prompt
-                }
+                    "content": prompt,
+                },
             ],
             temperature=0,
+            max_tokens=20,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = (completion.choices[0].message.content or "").strip()
 
         for action in available_actions:
             if action in text:
                 return action
 
-    except Exception as e:
-        print(f"[ERROR] LLM call failed: {e}")
+    except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
 
-    # Safe fallback if model output invalid
-    if "runAds" in available_actions:
-        return "runAds"
-
-    return available_actions[0]
+    return fallback_action(available_actions)
 
 
 for task in TASKS:
-    print(f"[START] task={task}")
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+
+    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        reset_response = requests.post(
+        response = requests.post(
             f"{ENV_URL}/reset",
             json={"task": task},
             timeout=10,
         )
-        reset_response.raise_for_status()
-        observation = reset_response.json()
+        response.raise_for_status()
+        observation = response.json()
 
-    except Exception as e:
-        print(f"[ERROR] reset failed for task={task}: {e}")
-        print(f"[END] task={task} score=0.0")
-        continue
+        done = False
 
-    done = False
-    step_num = 0
-    final_score = 0.0
+        for step in range(1, MAX_STEPS + 1):
+            if done:
+                break
 
-    while not done and step_num < 30:
-        action = choose_action(observation)
+            action = choose_action(observation)
 
-        try:
-            step_response = requests.post(
-                f"{ENV_URL}/step",
-                json={"action": action},
-                timeout=10,
-            )
-            step_response.raise_for_status()
-            result = step_response.json()
+            try:
+                result = requests.post(
+                    f"{ENV_URL}/step",
+                    json={"action": action},
+                    timeout=10,
+                )
+                result.raise_for_status()
+                data = result.json()
 
-            observation = result.get("observation", {})
-            reward = result.get("reward", {})
+                observation = data.get("observation", {})
+                reward_obj = data.get("reward", {})
 
-            reward_value = reward.get("reward", 0.0)
-            progress = reward.get("progress", 0.0)
-            done = reward.get("done", False)
-            final_score = reward.get("task_score", progress)
+                reward = float(reward_obj.get("reward", 0.0))
+                done = bool(reward_obj.get("done", False))
+                score = float(reward_obj.get("task_score", 0.0))
+                score = max(0.0, min(1.0, score))
 
-            print(
-                f"[STEP] task={task} step={step_num} "
-                f"action={action} reward={reward_value} "
-                f"progress={progress} done={done}"
-            )
+                rewards.append(reward)
+                steps_taken = step
 
-        except Exception as e:
-            print(f"[ERROR] step failed for task={task} step={step_num}: {e}")
-            break
+                log_step(
+                    step=step,
+                    action=action,
+                    reward=reward,
+                    done=done,
+                    error=None,
+                )
 
-        step_num += 1
+            except Exception as exc:
+                rewards.append(0.0)
+                steps_taken = step
 
-    print(f"[END] task={task} score={final_score}")
+                log_step(
+                    step=step,
+                    action=action,
+                    reward=0.0,
+                    done=True,
+                    error=str(exc),
+                )
+                break
+
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as exc:
+        rewards.append(0.0)
+        log_step(
+            step=1,
+            action="noWork",
+            reward=0.0,
+            done=True,
+            error=str(exc),
+        )
+
+    log_end(
+        success=success,
+        steps=steps_taken,
+        score=score,
+        rewards=rewards,
+    )

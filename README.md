@@ -16,9 +16,32 @@ The agent must make business decisions such as hiring employees, improving the p
 
 The environment is designed to simulate realistic startup growth challenges including cash management, employee morale, customer growth, product quality, and marketing strategy.
 
+## Features
 
+* Real-world startup management simulation
+* OpenEnv compliant API
+* Supports reset(), step(), and state()
+* Typed observation, action, and reward models
+* Deterministic graders for multiple tasks
+* Baseline inference script using OpenAI client
+* Docker support
+* Hugging Face Space deployment ready
 
+## Tasks
 
+### Easy
+
+Reach 500 customers before month 12.
+
+### Medium
+
+Survive 18 months with employee morale greater than 50.
+
+### Hard
+
+Reach 2000 customers and maintain profit greater than 50000.
+
+## Action Space
 
 Available actions:
 

@@ -1,200 +1,101 @@
 import json
 import os
-from typing import List, Optional
-
 import requests
 from openai import OpenAI
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+API_BASE_URL = os.environ["API_BASE_URL"]
+API_KEY = os.environ["API_KEY"]
+MODEL_NAME = os.environ["MODEL_NAME"]
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
-BENCHMARK = "startup-business-simulator"
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=API_KEY,
+)
+
 TASKS = ["easy", "medium", "hard"]
-MAX_STEPS = 30
-SUCCESS_SCORE_THRESHOLD = 0.1
-
-client = None
-if HF_TOKEN:
-    try:
-        client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=HF_TOKEN,
-        )
-    except Exception as exc:
-        print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
-        client = None
 
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
-
-
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
-    )
-
-
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
-        flush=True,
-    )
-
-
-def fallback_action(available_actions: List[str]) -> str:
-    preferred = [
-        "hireEngineer",
-        "runAds",
-        "improveProduct",
-        "hireMarketing",
-        "launchFeature",
-    ]
-
-    for action in preferred:
-        if action in available_actions:
-            return action
-
-    return available_actions[0] if available_actions else "noWork"
-
-
-def choose_action(observation: dict) -> str:
-    available_actions = observation.get("available_actions", [])
-
-    if not available_actions:
-        return "noWork"
-
-    if client is None:
-        return fallback_action(available_actions)
-
+def choose_action(observation):
     prompt = f"""
-You are managing a startup company.
+You are managing a startup business.
 
-Current observation:
+Current task: {observation["active_task"]}
+
+Current state:
 {json.dumps(observation, indent=2)}
 
-Choose exactly one action from this list:
-{available_actions}
+Choose exactly ONE action from:
+{", ".join(observation["available_actions"])}
 
-Return only the action name and nothing else.
+Strategy:
+- easy: prioritize run_ads
+- medium: balance hire_engineer, improve_product, run_ads
+- hard: improve_product first, then run_ads, then hire_engineer
+- avoid repeating the same action many times
+
+Return only the action name.
 """
 
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert startup business manager.",
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=0,
-            max_tokens=20,
-        )
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": "You are a business planning agent."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+        max_tokens=20,
+    )
 
-        text = (completion.choices[0].message.content or "").strip()
+    text = response.choices[0].message.content.strip()
 
-        for action in available_actions:
-            if action in text:
-                return action
+    for action in observation["available_actions"]:
+        if action in text:
+            return action
 
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
-
-    return fallback_action(available_actions)
+    return observation["available_actions"][0]
 
 
 for task in TASKS:
-    rewards: List[float] = []
-    steps_taken = 0
-    score = 0.0
-    success = False
+    reset_response = requests.post(
+        f"{ENV_URL}/reset",
+        json={"task": task},
+    )
+    observation = reset_response.json()
 
-    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
+    print(
+        f"[START] task={task} env=startup-business-simulator model={MODEL_NAME}"
+    )
 
-    try:
-        response = requests.post(
-            f"{ENV_URL}/reset",
-            json={"task": task},
-            timeout=10,
+    rewards = []
+    done = False
+    step = 0
+    final_score = 0.0
+
+    while not done and step < 10:
+        action = choose_action(observation)
+
+        step_response = requests.post(
+            f"{ENV_URL}/step",
+            json={"action": action},
         )
-        response.raise_for_status()
-        observation = response.json()
+        data = step_response.json()
 
-        done = False
+        observation = data["observation"]
+        reward = float(data["reward"]["reward"])
+        done = bool(data["reward"]["done"])
+        final_score = float(data["reward"]["score"])
 
-        for step in range(1, MAX_STEPS + 1):
-            if done:
-                break
+        rewards.append(reward)
+        step += 1
 
-            action = choose_action(observation)
-
-            try:
-                result = requests.post(
-                    f"{ENV_URL}/step",
-                    json={"action": action},
-                    timeout=10,
-                )
-                result.raise_for_status()
-                data = result.json()
-
-                observation = data.get("observation", {})
-                reward_obj = data.get("reward", {})
-
-                reward = float(reward_obj.get("reward", 0.0))
-                done = bool(reward_obj.get("done", False))
-                score = float(reward_obj.get("task_score", 0.0))
-                score = max(0.0, min(1.0, score))
-
-                rewards.append(reward)
-                steps_taken = step
-
-                log_step(
-                    step=step,
-                    action=action,
-                    reward=reward,
-                    done=done,
-                    error=None,
-                )
-
-            except Exception as exc:
-                rewards.append(0.0)
-                steps_taken = step
-
-                log_step(
-                    step=step,
-                    action=action,
-                    reward=0.0,
-                    done=True,
-                    error=str(exc),
-                )
-                break
-
-        success = score >= SUCCESS_SCORE_THRESHOLD
-
-    except Exception as exc:
-        rewards.append(0.0)
-        log_step(
-            step=1,
-            action="noWork",
-            reward=0.0,
-            done=True,
-            error=str(exc),
+        print(
+            f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error=null"
         )
 
-    log_end(
-        success=success,
-        steps=steps_taken,
-        score=score,
-        rewards=rewards,
+    reward_text = ",".join(f"{r:.2f}" for r in rewards)
+
+    print(
+        f"[END] success={str(final_score >= 0.5).lower()} "
+        f"steps={step} score={final_score:.3f} rewards={reward_text}"
     )

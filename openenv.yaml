@@ -1,0 +1,20 @@
+name: startup-business-simulator
+version: 1.0.0
+description: Real-world OpenEnv environment where an AI agent operates a startup company and must achieve business goals across progressively harder tasks.
+author: Manoj Alewad
+license: MIT
+entrypoint: app.py
+openapi: 3.1.0
+tags:
+  - openenv
+  - business
+  - reinforcement-learning
+  - startup
+environment:
+  observation_model: Observation
+  action_model: Action
+  reward_model: Reward
+endpoints:
+  reset: /reset
+  step: /step
+  state: /state

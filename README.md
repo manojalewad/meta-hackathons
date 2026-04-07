@@ -1,13 +1,11 @@
 ---
-
 title: Startup Business Simulator
 emoji: 🚀
 colorFrom: blue
 colorTo: green
 sdk: docker
 pinned: false
--------------
-
+---
 # Startup Business Simulator (OpenEnv)
 
 A real-world OpenEnv environment where an AI agent manages a startup company.

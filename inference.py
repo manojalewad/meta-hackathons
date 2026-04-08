@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 import json
@@ -6,12 +5,15 @@ from typing import List, Optional
 
 import requests
 from openai import OpenAI
-
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-
+BENCHMARK = "startup-business-simulator"
+TASKS = ["easy", "medium", "hard"]
+MAX_STEPS = 10
+SUCCESS_SCORE_THRESHOLD = 0.5
 # The evaluator usually injects API_KEY. Locally you may only have HF_TOKEN.
 TOKEN = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
 if not TOKEN:
     print("[ERROR] Missing API_KEY or HF_TOKEN", flush=True)
@@ -33,9 +35,7 @@ except Exception as exc:
                     raise RuntimeError("OpenAI client unavailable")
 
     client = DummyClient()
-except Exception as exc:
-    print(f"[ERROR] failed_to_initialize_client={exc}", flush=True)
-    raise
+
 
 
 def log_start(task: str, env: str, model: str) -> None:

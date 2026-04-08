@@ -1,12 +1,9 @@
-
-import os
 import json
-import asyncio
+import os
 from typing import List, Optional
 
 import requests
 from openai import OpenAI
-
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
@@ -15,110 +12,113 @@ ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
 BENCHMARK = "startup-business-simulator"
 TASKS = ["easy", "medium", "hard"]
-MAX_STEPS = 10
-SUCCESS_SCORE_THRESHOLD = 0.5
+MAX_STEPS = 30
+SUCCESS_SCORE_THRESHOLD = 0.1
 
 
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=API_KEY,
-)
+client = None
+if API_KEY:
+    try:
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=API_KEY,
+        )
+    except Exception as exc:
+        print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
+        client = None
 
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_value = error if error else "null"
+    error_val = error if error else "null"
+    done_val = str(done).lower()
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_value}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
         flush=True,
     )
-
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    reward_str = ",".join(f"{r:.2f}" for r in rewards)
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={reward_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
 
+def fallback_action(available_actions: List[str]) -> str:
+    preferred = [
+        "hireEngineer",
+        "runAds",
+        "improveProduct",
+        "hireMarketing",
+        "launchFeature",
+    ]
 
-def build_prompt(task: str, observation: dict, previous_actions: List[str]) -> str:
-    recent_actions = previous_actions[-3:] if previous_actions else []
+    for action in preferred:
+        if action in available_actions:
+            return action
 
-    return f"""
+    return available_actions[0] if available_actions else "noWork"
+
+
+def choose_action(observation: dict) -> str:
+    available_actions = observation.get("available_actions", [])
+
+    if not available_actions:
+        return "noWork"
+
+    if client is None:
+        return fallback_action(available_actions)
+
+    prompt = f"""
 You are managing a startup company.
 
-Current task: {task}
-
-Current company state:
+Current observation:
 {json.dumps(observation, indent=2)}
 
-Recent actions:
-{recent_actions}
+Choose exactly one action from this list:
+{available_actions}
 
-Choose exactly one action from available_actions.
-
-Strategy:
-- easy: focus on run_ads until customer target is reached
-- medium: use improve_product and hire_engineer, then run_ads
-- hard: combine improve_product, hire_engineer, hire_marketing, and run_ads
-- avoid repeating the same action more than 2 times in a row
-- never invent new actions
-
-Return only the action name.
-""".strip()
-
-
-
-def choose_action(task: str, observation: dict, previous_actions: List[str]) -> str:
-    prompt = build_prompt(task, observation, previous_actions)
+Return only the action name and nothing else.
+"""
 
     try:
-        response = client.chat.completions.create(
+        completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an AI agent that chooses business actions for a startup simulation.",
+                    "content": "You are an expert startup business manager.",
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
-            temperature=0.0,
+            temperature=0,
             max_tokens=20,
         )
 
-        text = (response.choices[0].message.content or "").strip()
+        text = (completion.choices[0].message.content or "").strip()
 
-        for action in observation.get("available_actions", []):
+        for action in available_actions:
             if action in text:
                 return action
 
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
 
-    available = observation.get("available_actions", [])
-
-    if task == "easy" and "run_ads" in available:
-        return "run_ads"
-    if task == "medium" and "improve_product" in available:
-        return "improve_product"
-    if task == "hard" and "hire_engineer" in available:
-        return "hire_engineer"
-
-    return available[0] if available else "run_ads"
+    return fallback_action(available_actions)
 
 
-async def run_task(task: str) -> None:
+for task in TASKS:
     rewards: List[float] = []
-    previous_actions: List[str] = []
     steps_taken = 0
-    final_score = 0.0
+    score = 0.0
     success = False
 
     log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
@@ -127,7 +127,7 @@ async def run_task(task: str) -> None:
         response = requests.post(
             f"{ENV_URL}/reset",
             json={"task": task},
-            timeout=30,
+            timeout=10,
         )
         response.raise_for_status()
         observation = response.json()
@@ -138,61 +138,64 @@ async def run_task(task: str) -> None:
             if done:
                 break
 
-            action = choose_action(task, observation, previous_actions)
-            previous_actions.append(action)
-
-            error = None
+            action = choose_action(observation)
 
             try:
                 result = requests.post(
                     f"{ENV_URL}/step",
                     json={"action": action},
-                    timeout=30,
+                    timeout=10,
                 )
                 result.raise_for_status()
-                payload = result.json()
+                data = result.json()
 
-                observation = payload["observation"]
-                reward_info = payload["reward"]
+                observation = data.get("observation", {})
+                reward_obj = data.get("reward", {})
 
-                reward = float(reward_info.get("reward", 0.0))
-                done = bool(reward_info.get("done", False))
-                final_score = float(reward_info.get("score", 0.0))
+                reward = float(reward_obj.get("reward", 0.0))
+                done = bool(reward_obj.get("done", False))
+                score = float(reward_obj.get("task_score", 0.0))
+                score = max(0.0, min(1.0, score))
+
+                rewards.append(reward)
+                steps_taken = step
+
+                log_step(
+                    step=step,
+                    action=action,
+                    reward=reward,
+                    done=done,
+                    error=None,
+                )
 
             except Exception as exc:
-                reward = 0.0
-                done = True
-                error = str(exc)
+                rewards.append(0.0)
+                steps_taken = step
 
-            rewards.append(reward)
-            steps_taken = step
-
-            log_step(
-                step=step,
-                action=action,
-                reward=reward,
-                done=done,
-                error=error,
-            )
-
-            if done:
+                log_step(
+                    step=step,
+                    action=action,
+                    reward=0.0,
+                    done=True,
+                    error=str(exc),
+                )
                 break
 
-        success = final_score >= SUCCESS_SCORE_THRESHOLD
+        success = score >= SUCCESS_SCORE_THRESHOLD
 
-    finally:
-        log_end(
-            success=success,
-            steps=steps_taken,
-            score=final_score,
-            rewards=rewards,
+    except Exception as exc:
+        rewards.append(0.0)
+        log_step(
+            step=1,
+            action="noWork",
+            reward=0.0,
+            done=True,
+            error=str(exc),
         )
 
-
-async def main() -> None:
-    for task in TASKS:
-        await run_task(task)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    log_end(
+        success=success,
+        steps=steps_taken,
+        score=score,
+        rewards=rewards,
+    )

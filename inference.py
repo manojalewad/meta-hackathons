@@ -1,96 +1,97 @@
 import asyncio
-import os
 import json
+import os
 from typing import List, Optional
 
 import requests
 from openai import OpenAI
+
+# REQUIRED: use the evaluator-injected proxy variables exactly
 API_BASE_URL = os.environ["API_BASE_URL"]
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_KEY = os.environ["API_KEY"]
 
-# The evaluator usually injects API_KEY. Locally you may only have HF_TOKEN.
-TOKEN =os.environ["API_KEY"]
+# MODEL_NAME must still support a default
+MODEL_NAME = os.getenv(
+    "MODEL_NAME",
+    "meta-llama/Llama-3.1-8B-Instruct"
+)
+
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
-TASKS = ["easy", "medium", "hard"]
+
 BENCHMARK = "startup-business-simulator"
+TASKS = ["easy", "medium", "hard"]
 MAX_STEPS = 10
-SUCCESS_SCORE_THRESHOLD = 0.5
-if not TOKEN:
-    print("[ERROR] Missing API_KEY or HF_TOKEN", flush=True)
-    TOKEN = "missing"
 
-try:
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"]
-    )
-except Exception as exc:
-    print(f"[ERROR] OpenAI client initialization failed: {exc}", flush=True)
-
-    class DummyClient:
-        class chat:
-            class completions:
-                @staticmethod
-                def create(*args, **kwargs):
-                    raise RuntimeError("OpenAI client unavailable")
-
-    client = DummyClient()
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=API_KEY,
+)
 
 
-
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
-
-
-
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_value = error if error else "null"
+def log_start(task: str) -> None:
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_value}",
+        f"[START] task={task} env={BENCHMARK} model={MODEL_NAME}",
         flush=True,
     )
 
 
-
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    reward_str = ",".join(f"{r:.2f}" for r in rewards)
+def log_step(
+    step: int,
+    action: str,
+    reward: float,
+    done: bool,
+    error: Optional[str],
+) -> None:
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={reward_str}",
+        f"[STEP] step={step} action={action} "
+        f"reward={reward:.2f} "
+        f"done={str(done).lower()} "
+        f"error={error if error else 'null'}",
         flush=True,
     )
 
 
+def log_end(
+    success: bool,
+    steps: int,
+    rewards: List[float],
+) -> None:
+    reward_text = ",".join(f"{r:.2f}" for r in rewards)
 
-def build_prompt(task: str, observation: dict, previous_actions: List[str]) -> str:
-    recent_actions = previous_actions[-3:] if previous_actions else []
+    print(
+        f"[END] success={str(success).lower()} "
+        f"steps={steps} rewards={reward_text}",
+        flush=True,
+    )
 
-    return f"""
-You are managing a startup company.
 
-Current task: {task}
+def choose_action(
+    task: str,
+    observation: dict,
+    previous_actions: List[str],
+) -> str:
+    available_actions = observation.get("available_actions", [])
 
-Current company state:
-{json.dumps(observation, indent=2)}
+    if not available_actions:
+        return "run_ads"
+
+    prompt = f"""
+You are controlling a startup company.
+
+Task:
+{task}
+
+Observation:
+{json.dumps(observation)}
 
 Recent actions:
-{recent_actions}
+{previous_actions[-3:]}
 
-Choose exactly one action from available_actions.
-
-Strategy:
-- easy: focus on run_ads until customer target is reached
-- medium: use improve_product and hire_engineer, then run_ads
-- hard: combine improve_product, hire_engineer, hire_marketing, and run_ads
-- avoid repeating the same action more than 2 times in a row
-- never invent new actions
+Choose exactly one action from:
+{available_actions}
 
 Return only the action name.
 """.strip()
-
-
-
-def choose_action(task: str, observation: dict, previous_actions: List[str]) -> str:
-    prompt = build_prompt(task, observation, previous_actions)
 
     try:
         response = client.chat.completions.create(
@@ -98,82 +99,86 @@ def choose_action(task: str, observation: dict, previous_actions: List[str]) -> 
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an AI agent that chooses business actions for a startup simulation.",
+                    "content": "You are an expert startup management agent."
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": prompt
+                }
             ],
-            temperature=0.0,
-            max_tokens=20,
+            temperature=0,
+            max_tokens=10,
         )
 
-        text = (response.choices[0].message.content or "").strip()
+        text = (
+            response.choices[0].message.content or ""
+        ).strip()
 
-        for action in observation.get("available_actions", []):
+        for action in available_actions:
             if action in text:
                 return action
 
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
 
-    available = observation.get("available_actions", [])
-
-    if task == "easy" and "run_ads" in available:
-        return "run_ads"
-    if task == "medium" and "improve_product" in available:
-        return "improve_product"
-    if task == "hard" and "hire_engineer" in available:
-        return "hire_engineer"
-
-    return available[0] if available else "run_ads"
+    return available_actions[0]
 
 
 async def run_task(task: str) -> None:
     rewards: List[float] = []
     previous_actions: List[str] = []
-    steps_taken = 0
-    final_score = 0.0
-    success = False
 
-    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
+    steps_taken = 0
+    success = False
+    done = False
+
+    log_start(task)
 
     try:
-        response = requests.post(
+        reset_response = requests.post(
             f"{ENV_URL}/reset",
             json={"task": task},
             timeout=30,
         )
-        response.raise_for_status()
-        observation = response.json()
+        reset_response.raise_for_status()
 
-        done = False
+        observation = reset_response.json()
 
         for step in range(1, MAX_STEPS + 1):
             if done:
                 break
 
-            action = choose_action(task, observation, previous_actions)
+            action = choose_action(
+                task,
+                observation,
+                previous_actions,
+            )
             previous_actions.append(action)
 
+            reward = 0.0
             error = None
 
             try:
-                result = requests.post(
+                step_response = requests.post(
                     f"{ENV_URL}/step",
                     json={"action": action},
                     timeout=30,
                 )
-                result.raise_for_status()
-                payload = result.json()
+                step_response.raise_for_status()
+
+                payload = step_response.json()
 
                 observation = payload["observation"]
                 reward_info = payload["reward"]
 
-                reward = float(reward_info.get("reward", 0.0))
-                done = bool(reward_info.get("done", False))
-                final_score = float(reward_info.get("score", 0.0))
+                reward = float(
+                    reward_info.get("reward", 0.0)
+                )
+                done = bool(
+                    reward_info.get("done", False)
+                )
 
             except Exception as exc:
-                reward = 0.0
                 done = True
                 error = str(exc)
 
@@ -188,16 +193,21 @@ async def run_task(task: str) -> None:
                 error=error,
             )
 
-            if done:
-                break
-
-        success = final_score >= SUCCESS_SCORE_THRESHOLD
+    except Exception as exc:
+        log_step(
+            step=1,
+            action="none",
+            reward=0.00,
+            done=True,
+            error=str(exc),
+        )
 
     finally:
+        success = len(rewards) > 0 and max(rewards) > 0.0
+
         log_end(
             success=success,
             steps=steps_taken,
-            score=final_score,
             rewards=rewards,
         )
 
@@ -209,4 +219,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

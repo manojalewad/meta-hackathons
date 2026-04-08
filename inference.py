@@ -5,16 +5,16 @@ from typing import List, Optional
 
 import requests
 from openai import OpenAI
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-BENCHMARK = "startup-business-simulator"
+
+# The evaluator usually injects API_KEY. Locally you may only have HF_TOKEN.
+TOKEN =os.environ["API_KEY"]
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 TASKS = ["easy", "medium", "hard"]
+BENCHMARK = "startup-business-simulator"
 MAX_STEPS = 10
 SUCCESS_SCORE_THRESHOLD = 0.5
-# The evaluator usually injects API_KEY. Locally you may only have HF_TOKEN.
-TOKEN = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
-
 if not TOKEN:
     print("[ERROR] Missing API_KEY or HF_TOKEN", flush=True)
     TOKEN = "missing"

@@ -7,29 +7,31 @@ import requests
 from openai import OpenAI
 
 # REQUIRED: use the evaluator-injected proxy variables exactly
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "meta-lamma model 3b")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv(
+    "MODEL_NAME",
+    "meta-llama/Llama-3.2-3B-Instruct"
+)
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
+
+ENV_URL = os.getenv("ENV_BASE_URL", "http://localhost:8000")
 
 BENCHMARK = "startup-business-simulator"
 TASKS = ["easy", "medium", "hard"]
 MAX_STEPS = 10
 
-
-MODEL_NAME = os.getenv(
-    "MODEL_NAME",
-    "meta-llama/Llama-3.1-8B-Instruct"
-)
-
 client = None
 
 if API_KEY:
-    client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY
-    )
+    try:
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=API_KEY,
+        )
+    except Exception as exc:
+        print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
+        client = None
 
 def log_start(task: str) -> None:
     print(

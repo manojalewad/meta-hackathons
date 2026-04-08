@@ -21,8 +21,8 @@ if not TOKEN:
 
 try:
     client = OpenAI(
-        base_url=API_BASE_URL.rstrip("/"),
-        api_key=TOKEN,
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"]
     )
 except Exception as exc:
     print(f"[ERROR] OpenAI client initialization failed: {exc}", flush=True)

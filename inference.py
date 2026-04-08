@@ -7,9 +7,8 @@ import requests
 from openai import OpenAI
 
 # REQUIRED: use the evaluator-injected proxy variables exactly
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1") 
 # MODEL_NAME must still support a default
 MODEL_NAME = os.getenv(
     "MODEL_NAME",

@@ -15,7 +15,7 @@ MODEL_NAME = os.getenv(
     "meta-llama/Llama-3.1-8B-Instruct"
 )
 
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 
 BENCHMARK = "startup-business-simulator"
 TASKS = ["easy", "medium", "hard"]

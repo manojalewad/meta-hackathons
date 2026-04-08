@@ -1,6 +1,4 @@
-# inference.py
 
-```python
 import os
 import json
 import asyncio
@@ -201,4 +199,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-```

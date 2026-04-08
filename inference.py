@@ -22,10 +22,28 @@ BENCHMARK = "startup-business-simulator"
 TASKS = ["easy", "medium", "hard"]
 MAX_STEPS = 10
 
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=API_KEY,
+
+MODEL_NAME = os.getenv(
+    "MODEL_NAME",
+    "meta-llama/Llama-3.1-8B-Instruct"
 )
+
+try:
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
+    )
+except Exception as exc:
+    print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
+
+    class DummyClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(*args, **kwargs):
+                    raise RuntimeError("OpenAI client unavailable")
+
+    client = DummyClient()
 
 
 def log_start(task: str) -> None:

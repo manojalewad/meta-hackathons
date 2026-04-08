@@ -8,7 +8,7 @@ from openai import OpenAI
 
 # REQUIRED: use the evaluator-injected proxy variables exactly
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+MODEL_NAME   = os.getenv("MODEL_NAME", "meta-lamma model 3b")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")

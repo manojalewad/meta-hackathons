@@ -1,34 +1,33 @@
 
 import os
-import json
-import asyncio
-from typing import List, Optional
-
-import requests
 from openai import OpenAI
-
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_KEY = os.getenv("API_KEY")
 
-TOKEN = API_KEY or HF_TOKEN
-if TOKEN is None:
-    raise ValueError("Missing API_KEY/HF_TOKEN environment variable")
+# The evaluator usually injects API_KEY. Locally you may only have HF_TOKEN.
+TOKEN = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
-
-BENCHMARK = "startup-business-simulator"
-TASKS = ["easy", "medium", "hard"]
-MAX_STEPS = 10
-SUCCESS_SCORE_THRESHOLD = 0.5
+if not TOKEN:
+    print("[ERROR] Missing API_KEY or HF_TOKEN", flush=True)
+    TOKEN = "missing"
 
 try:
     client = OpenAI(
-        base_url=API_BASE_URL,
+        base_url=API_BASE_URL.rstrip("/"),
         api_key=TOKEN,
     )
+except Exception as exc:
+    print(f"[ERROR] OpenAI client initialization failed: {exc}", flush=True)
+
+    class DummyClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(*args, **kwargs):
+                    raise RuntimeError("OpenAI client unavailable")
+
+    client = DummyClient()
 except Exception as exc:
     print(f"[ERROR] failed_to_initialize_client={exc}", flush=True)
     raise
@@ -205,4 +204,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

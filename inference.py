@@ -11,9 +11,11 @@ from openai import OpenAI
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY = os.getenv("API_KEY")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
+TOKEN = API_KEY or HF_TOKEN
+if TOKEN is None:
+    raise ValueError("Missing API_KEY/HF_TOKEN environment variable")
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
@@ -22,10 +24,14 @@ TASKS = ["easy", "medium", "hard"]
 MAX_STEPS = 10
 SUCCESS_SCORE_THRESHOLD = 0.5
 
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
-)
+try:
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=TOKEN,
+    )
+except Exception as exc:
+    print(f"[ERROR] failed_to_initialize_client={exc}", flush=True)
+    raise
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -199,3 +205,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

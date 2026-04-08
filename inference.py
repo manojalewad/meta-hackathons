@@ -1,53 +1,82 @@
-import asyncio
-import json
+#!/usr/bin/env python3
+"""
+inference.py — Startup Business Simulator OpenEnv Agent
+=======================================================
+Runs an LLM agent through all startup tasks and emits structured stdout logs.
+
+Required environment variables:
+    API_BASE_URL      LLM API endpoint
+    MODEL_NAME        Model identifier
+    HF_TOKEN          HuggingFace / API key
+    API_KEY           Injected evaluator key
+    ENV_BASE_URL      Environment server URL
+
+Stdout format:
+    [START] task=<task> env=<benchmark> model=<model>
+    [STEP]  step=<n> action=<action> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
+"""
+
 import os
+import json
 from typing import List, Optional
 
 import requests
 from openai import OpenAI
 
-# REQUIRED: use the evaluator-injected proxy variables exactly
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1") 
-# MODEL_NAME must still support a default
-MODEL_NAME = os.getenv(
-    "MODEL_NAME",
-    "meta-llama/Llama-3.1-8B-Instruct"
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "https://router.huggingface.co/v1"
 )
 
-ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
+MODEL_NAME = os.getenv(
+    "MODEL_NAME",
+    "meta-llama/Llama-3.2-3B-Instruct"
+)
+
+ENV_BASE_URL = os.getenv(
+    "ENV_BASE_URL",
+    "http://localhost:8000"
+)
 
 BENCHMARK = "startup-business-simulator"
-TASKS = ["easy", "medium", "hard"]
+
+TASKS = [
+    "easy",
+    "medium",
+    "hard",
+]
+
 MAX_STEPS = 10
+SUCCESS_SCORE_THRESHOLD = 0.5
+TEMPERATURE = 0.0
+MAX_TOKENS = 32
 
+SYSTEM_PROMPT = """
+You are an expert startup business manager.
 
-MODEL_NAME = os.getenv(
-    "MODEL_NAME",
-    "meta-llama/Llama-3.1-8B-Instruct"
-)
+You are given the current state of a startup company.
 
-try:
-    client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY,
-    )
-except Exception as exc:
-    print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
+You must choose exactly one action from the available actions.
 
-    class DummyClient:
-        class chat:
-            class completions:
-                @staticmethod
-                def create(*args, **kwargs):
-                    raise RuntimeError("OpenAI client unavailable")
+Reply with ONLY the action name.
+Do not explain your answer.
+Do not output extra text.
+""".strip()
 
-    client = DummyClient()
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
 
-
-def log_start(task: str) -> None:
+def log_start(task: str, env: str, model: str) -> None:
     print(
-        f"[START] task={task} env={BENCHMARK} model={MODEL_NAME}",
+        f"[START] task={task} env={env} model={model}",
         flush=True,
     )
 
@@ -59,11 +88,11 @@ def log_step(
     done: bool,
     error: Optional[str],
 ) -> None:
+    error_val = error if error else "null"
+
     print(
-        f"[STEP] step={step} action={action} "
-        f"reward={reward:.2f} "
-        f"done={str(done).lower()} "
-        f"error={error if error else 'null'}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={str(done).lower()} error={error_val}",
         flush=True,
     )
 
@@ -71,133 +100,145 @@ def log_step(
 def log_end(
     success: bool,
     steps: int,
+    score: float,
     rewards: List[float],
 ) -> None:
-    reward_text = ",".join(f"{r:.2f}" for r in rewards)
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
     print(
         f"[END] success={str(success).lower()} "
-        f"steps={steps} rewards={reward_text}",
+        f"steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
+# ---------------------------------------------------------------------------
+# LLM call
+# ---------------------------------------------------------------------------
 
-def choose_action(
+def get_model_action(
+    client: OpenAI,
     task: str,
     observation: dict,
-    previous_actions: List[str],
+    history: List[str],
 ) -> str:
     available_actions = observation.get("available_actions", [])
 
     if not available_actions:
         return "run_ads"
 
-    prompt = f"""
-You are controlling a startup company.
+    history_block = "\n".join(history[-3:]) if history else "None"
 
+    user_prompt = f"""
 Task:
 {task}
 
-Observation:
-{json.dumps(observation)}
+Current startup state:
+{json.dumps(observation, indent=2)}
 
-Recent actions:
-{previous_actions[-3:]}
+Recent decisions:
+{history_block}
 
-Choose exactly one action from:
+Available actions:
 {available_actions}
 
-Return only the action name.
+Return exactly one action from the list above.
 """.strip()
 
     try:
-        response = client.chat.completions.create(
+        completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert startup management agent."
+                    "content": SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": prompt
-                }
+                    "content": user_prompt,
+                },
             ],
-            temperature=0,
-            max_tokens=10,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
         )
 
         text = (
-            response.choices[0].message.content or ""
+            completion.choices[0].message.content or ""
         ).strip()
 
         for action in available_actions:
-            if action in text:
+            if action.lower() in text.lower():
                 return action
 
+        return available_actions[0]
+
     except Exception as exc:
-        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+        return available_actions[0]
 
-    return available_actions[0]
+# ---------------------------------------------------------------------------
+# Single task runner
+# ---------------------------------------------------------------------------
 
-
-async def run_task(task: str) -> None:
+def run_task(client: OpenAI, task_name: str) -> None:
+    history: List[str] = []
     rewards: List[float] = []
-    previous_actions: List[str] = []
 
     steps_taken = 0
+    score = 0.0
     success = False
-    done = False
+    last_error: Optional[str] = None
 
-    log_start(task)
+    log_start(
+        task=task_name,
+        env=BENCHMARK,
+        model=MODEL_NAME,
+    )
 
     try:
-        reset_response = requests.post(
-            f"{ENV_URL}/reset",
-            json={"task": task},
+        response = requests.post(
+            f"{ENV_BASE_URL}/reset",
+            json={"task": task_name},
             timeout=30,
         )
-        reset_response.raise_for_status()
+        response.raise_for_status()
 
-        observation = reset_response.json()
+        observation = response.json()
+        done = False
 
         for step in range(1, MAX_STEPS + 1):
             if done:
                 break
 
-            action = choose_action(
-                task,
-                observation,
-                previous_actions,
+            action = get_model_action(
+                client=client,
+                task=task_name,
+                observation=observation,
+                history=history,
             )
-            previous_actions.append(action)
-
-            reward = 0.0
-            error = None
 
             try:
                 step_response = requests.post(
-                    f"{ENV_URL}/step",
+                    f"{ENV_BASE_URL}/step",
                     json={"action": action},
                     timeout=30,
                 )
                 step_response.raise_for_status()
 
-                payload = step_response.json()
+                result = step_response.json()
 
-                observation = payload["observation"]
-                reward_info = payload["reward"]
+                observation = result["observation"]
 
-                reward = float(
-                    reward_info.get("reward", 0.0)
-                )
-                done = bool(
-                    reward_info.get("done", False)
-                )
+                reward_info = result["reward"]
+                reward = float(reward_info.get("reward", 0.0))
+                done = bool(reward_info.get("done", False))
+
+                last_error = None
 
             except Exception as exc:
+                reward = 0.0
                 done = True
-                error = str(exc)
+                last_error = str(exc)
 
             rewards.append(reward)
             steps_taken = step
@@ -207,32 +248,45 @@ async def run_task(task: str) -> None:
                 action=action,
                 reward=reward,
                 done=done,
-                error=error,
+                error=last_error,
             )
 
+            history.append(
+                f"Step {step}: {action} -> reward {reward:.2f}"
+            )
+
+            if done:
+                break
+
+        score = sum(rewards) / len(rewards) if rewards else 0.0
+        score = max(0.0, min(score, 1.0))
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
     except Exception as exc:
-        log_step(
-            step=1,
-            action="none",
-            reward=0.00,
-            done=True,
-            error=str(exc),
-        )
+        last_error = str(exc)
+        print(f"[DEBUG] Task {task_name} failed: {last_error}", flush=True)
 
     finally:
-        success = len(rewards) > 0 and max(rewards) > 0.0
-
         log_end(
             success=success,
             steps=steps_taken,
+            score=score,
             rewards=rewards,
         )
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-async def main() -> None:
-    for task in TASKS:
-        await run_task(task)
+def main() -> None:
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
+    )
+
+    for task_name in TASKS:
+        run_task(client, task_name)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

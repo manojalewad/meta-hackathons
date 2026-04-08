@@ -1,101 +1,198 @@
-import json
+
 import os
+import json
+import asyncio
+from typing import List, Optional
+
 import requests
 from openai import OpenAI
 
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-MODEL_NAME = os.environ["MODEL_NAME"]
-ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
+
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+
+BENCHMARK = "startup-business-simulator"
+TASKS = ["easy", "medium", "hard"]
+MAX_STEPS = 10
+SUCCESS_SCORE_THRESHOLD = 0.5
+
 
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=API_KEY,
 )
 
-TASKS = ["easy", "medium", "hard"]
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def choose_action(observation):
-    prompt = f"""
-You are managing a startup business.
 
-Current task: {observation["active_task"]}
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_value = error if error else "null"
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_value}",
+        flush=True,
+    )
 
-Current state:
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    reward_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={reward_str}",
+        flush=True,
+    )
+
+
+
+def build_prompt(task: str, observation: dict, previous_actions: List[str]) -> str:
+    recent_actions = previous_actions[-3:] if previous_actions else []
+
+    return f"""
+You are managing a startup company.
+
+Current task: {task}
+
+Current company state:
 {json.dumps(observation, indent=2)}
 
-Choose exactly ONE action from:
-{", ".join(observation["available_actions"])}
+Recent actions:
+{recent_actions}
+
+Choose exactly one action from available_actions.
 
 Strategy:
-- easy: prioritize run_ads
-- medium: balance hire_engineer, improve_product, run_ads
-- hard: improve_product first, then run_ads, then hire_engineer
-- avoid repeating the same action many times
+- easy: focus on run_ads until customer target is reached
+- medium: use improve_product and hire_engineer, then run_ads
+- hard: combine improve_product, hire_engineer, hire_marketing, and run_ads
+- avoid repeating the same action more than 2 times in a row
+- never invent new actions
 
 Return only the action name.
-"""
-
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": "You are a business planning agent."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-        max_tokens=20,
-    )
-
-    text = response.choices[0].message.content.strip()
-
-    for action in observation["available_actions"]:
-        if action in text:
-            return action
-
-    return observation["available_actions"][0]
+""".strip()
 
 
-for task in TASKS:
-    reset_response = requests.post(
-        f"{ENV_URL}/reset",
-        json={"task": task},
-    )
-    observation = reset_response.json()
 
-    print(
-        f"[START] task={task} env=startup-business-simulator model={MODEL_NAME}"
-    )
+def choose_action(task: str, observation: dict, previous_actions: List[str]) -> str:
+    prompt = build_prompt(task, observation, previous_actions)
 
-    rewards = []
-    done = False
-    step = 0
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI agent that chooses business actions for a startup simulation.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=20,
+        )
+
+        text = (response.choices[0].message.content or "").strip()
+
+        for action in observation.get("available_actions", []):
+            if action in text:
+                return action
+
+    except Exception:
+        pass
+
+    available = observation.get("available_actions", [])
+
+    if task == "easy" and "run_ads" in available:
+        return "run_ads"
+    if task == "medium" and "improve_product" in available:
+        return "improve_product"
+    if task == "hard" and "hire_engineer" in available:
+        return "hire_engineer"
+
+    return available[0] if available else "run_ads"
+
+
+async def run_task(task: str) -> None:
+    rewards: List[float] = []
+    previous_actions: List[str] = []
+    steps_taken = 0
     final_score = 0.0
+    success = False
 
-    while not done and step < 10:
-        action = choose_action(observation)
+    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
-        step_response = requests.post(
-            f"{ENV_URL}/step",
-            json={"action": action},
+    try:
+        response = requests.post(
+            f"{ENV_URL}/reset",
+            json={"task": task},
+            timeout=30,
         )
-        data = step_response.json()
+        response.raise_for_status()
+        observation = response.json()
 
-        observation = data["observation"]
-        reward = float(data["reward"]["reward"])
-        done = bool(data["reward"]["done"])
-        final_score = float(data["reward"]["score"])
+        done = False
 
-        rewards.append(reward)
-        step += 1
+        for step in range(1, MAX_STEPS + 1):
+            if done:
+                break
 
-        print(
-            f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error=null"
+            action = choose_action(task, observation, previous_actions)
+            previous_actions.append(action)
+
+            error = None
+
+            try:
+                result = requests.post(
+                    f"{ENV_URL}/step",
+                    json={"action": action},
+                    timeout=30,
+                )
+                result.raise_for_status()
+                payload = result.json()
+
+                observation = payload["observation"]
+                reward_info = payload["reward"]
+
+                reward = float(reward_info.get("reward", 0.0))
+                done = bool(reward_info.get("done", False))
+                final_score = float(reward_info.get("score", 0.0))
+
+            except Exception as exc:
+                reward = 0.0
+                done = True
+                error = str(exc)
+
+            rewards.append(reward)
+            steps_taken = step
+
+            log_step(
+                step=step,
+                action=action,
+                reward=reward,
+                done=done,
+                error=error,
+            )
+
+            if done:
+                break
+
+        success = final_score >= SUCCESS_SCORE_THRESHOLD
+
+    finally:
+        log_end(
+            success=success,
+            steps=steps_taken,
+            score=final_score,
+            rewards=rewards,
         )
 
-    reward_text = ",".join(f"{r:.2f}" for r in rewards)
 
-    print(
-        f"[END] success={str(final_score >= 0.5).lower()} "
-        f"steps={step} score={final_score:.3f} rewards={reward_text}"
-    )
+async def main() -> None:
+    for task in TASKS:
+        await run_task(task)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

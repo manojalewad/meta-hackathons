@@ -11,7 +11,7 @@ from openai import OpenAI
 # Environment variables
 # ------------------------------------------------------------
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv(
     "MODEL_NAME",
@@ -26,15 +26,17 @@ if not OPENAI_API_KEY:
 # OpenAI client
 # ------------------------------------------------------------
 
+
 client = None
 
-try:
-    client = OpenAI(
-        api_key=OPENAI_API_KEY,
-        base_url=API_BASE_URL.rstrip("/"),
-    )
-except Exception as exc:
-    print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
+if OPENAI_API_KEY:
+    try:
+        client = OpenAI(
+            api_key=OPENAI_API_KEY,
+            base_url=API_BASE_URL.rstrip("/"),
+        )
+    except Exception as exc:
+        print(f"[DEBUG] Failed to initialize OpenAI client: {exc}", flush=True)
 
 # ------------------------------------------------------------
 # Constants

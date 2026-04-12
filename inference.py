@@ -70,6 +70,15 @@ TASKS             = ["easy", "medium", "hard"]
 MAX_STEPS         = 10
 SUCCESS_THRESHOLD = 0.5
 
+# Score must be strictly inside (0, 1) — never exactly 0.0 or 1.0
+SCORE_MIN = 1e-6
+SCORE_MAX = 1.0 - 1e-6
+
+
+def clamp_score(value: float) -> float:
+    """Clamp a score to the open interval (0, 1) exclusively."""
+    return max(SCORE_MIN, min(SCORE_MAX, value))
+
 # ------------------------------------------------------------
 # Logging helpers
 # ------------------------------------------------------------
@@ -87,18 +96,19 @@ def log_step(
 ) -> None:
     print(
         f"[STEP] step={step} action={action} "
-        f"reward={reward:.2f} "
+        f"reward={reward:.6f} "
         f"done={str(done).lower()} "
         f"error={error if error else 'null'}",
         flush=True,
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(score: float, steps: int, rewards: List[float]) -> None:
+    """Log final score — always strictly within (0, 1)."""
     print(
-        f"[END] success={str(success).lower()} "
+        f"[END] score={score:.6f} "
         f"steps={steps} "
-        f"rewards={','.join(f'{r:.2f}' for r in rewards)}",
+        f"rewards={','.join(f'{r:.6f}' for r in rewards)}",
         flush=True,
     )
 
@@ -160,10 +170,10 @@ Return ONLY the action name — no explanation, no punctuation."""
     )
 
 # ------------------------------------------------------------
-# Run one task
+# Run one task — returns a score strictly in (0, 1)
 # ------------------------------------------------------------
 
-def run_task(task: str) -> None:
+def run_task(task: str) -> float:
     rewards: List[float] = []
     history: List[str]   = []
     steps_taken          = 0
@@ -185,7 +195,6 @@ def run_task(task: str) -> None:
             if done:
                 break
 
-            # choose_action raises on any failure — no silent swallowing
             action = choose_action(task=task, observation=observation, history=history)
 
             reward = 0.0
@@ -219,12 +228,15 @@ def run_task(task: str) -> None:
         log_step(step=1, action="none", reward=0.0, done=True, error=str(exc))
 
     finally:
-        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        log_end(
-            success=avg_reward >= SUCCESS_THRESHOLD,
-            steps=steps_taken,
-            rewards=rewards,
-        )
+        raw_score = sum(rewards) / len(rewards) if rewards else 0.0
+
+        # CRITICAL: clamp to strictly open interval (0, 1)
+        # A raw score of exactly 0.0 or 1.0 will be rejected by the evaluator
+        score = clamp_score(raw_score)
+
+        log_end(score=score, steps=steps_taken, rewards=rewards)
+
+    return score
 
 # ------------------------------------------------------------
 # Main
@@ -232,7 +244,11 @@ def run_task(task: str) -> None:
 
 def main() -> None:
     for task in TASKS:
-        run_task(task)
+        score = run_task(task)
+        print(f"[SCORE] task={task} score={score:.6f}", flush=True)
+        assert SCORE_MIN <= score <= SCORE_MAX, (
+            f"Score {score} is out of range — must be strictly between 0 and 1."
+        )
 
 
 if __name__ == "__main__":
